@@ -1,0 +1,14 @@
+# Development configuration and database
+dev-config/
+
+# Dependencies
+node_modules/
+
+# Local configuration
+config.yml
+
+# SQLite
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*

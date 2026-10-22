@@ -1,0 +1,29 @@
+{
+  "name": "mdblist-seerr-requester",
+  "version": "1.0.0",
+  "description": "A lightweight, self-hosted application that automatically discovers movies and TV shows from MDBList and submits requests to Seerr.",
+  "main": "src/index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Solidverse/mdblist-seerr-requester.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/Solidverse/mdblist-seerr-requester/issues"
+  },
+  "homepage": "https://github.com/Solidverse/mdblist-seerr-requester#readme",
+  "engines": {
+    "node": ">=24 <25"
+  }
+}

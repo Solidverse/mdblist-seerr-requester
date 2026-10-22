@@ -1,0 +1,34 @@
+# Git
+.git
+.github
+
+# Development
+.vscode
+.idea
+node_modules
+tests
+coverage
+
+# Environment & secrets
+.env
+.env.*
+config.yml
+
+# SQLite databases
+data
+*.db*
+*.sqlite*
+
+# Logs
+*.log
+npm-debug.log*
+
+# Development Docker Compose
+compose.yaml
+
+# Documentation
+README.md
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,28 @@
+services:
+  requester:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    image: mdblist-seerr-requester:dev
+
+    environment:
+      NODE_ENV: development
+      CONFIG_PATH: /config/config.yml
+
+    command: ["npm", "run", "dev"]
+
+    volumes:
+      - ./dev-config:/config
+      - ./src:/app/src:ro
+
+    develop:
+      watch:
+        - action: rebuild
+          path: ./package.json
+
+        - action: rebuild
+          path: ./package-lock.json
+
+        - action: rebuild
+          path: ./Dockerfile
