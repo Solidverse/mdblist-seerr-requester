@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { parse, stringify } from "yaml";
 import { createConfigWatcher } from "../src/config/watcher.js";
+import { createScheduler } from "../src/scheduler.js";
 
 const example = parse(await readFile(new URL("../config.example.yml", import.meta.url), "utf8"));
 
@@ -163,4 +164,28 @@ test("changes during a reload are queued without overlapping reads", async (t) =
   assert.equal(reads, 2);
   assert.equal(maximumActiveReads, 1);
   assert.equal(watcher.getConfig().dryRun, true);
+});
+
+test("subscribers and scheduler only react to validated reloads and can unsubscribe", async (t) => {
+  const { path, watcher, errors } = await setup(t);
+  const notifications = [];
+  const unsubscribe = watcher.subscribe(() => notifications.push(watcher.getConfig()));
+  const schedulerLogs = [];
+  const scheduler = createScheduler(watcher, {
+    logger: { log: (message) => schedulerLogs.push(message), error() {} },
+  });
+  t.after(() => scheduler.stop());
+  scheduler.start();
+  await writeFile(path, stringify({ ...example, scheduleCron: "invalid" }));
+  await waitFor(() => errors.length === 1);
+  assert.equal(notifications.length, 0);
+  assert.equal(schedulerLogs.filter((message) => message.includes("Next execution")).length, 1);
+  await writeFile(path, stringify({ ...example, scheduleCron: "*/2 * * * *" }));
+  await waitFor(() => notifications.length === 1);
+  assert.equal(notifications[0], watcher.getConfig());
+  assert.ok(schedulerLogs.includes("[SCHEDULER] Schedule updated."));
+  unsubscribe();
+  await writeFile(path, stringify({ ...example, scheduleCron: "*/3 * * * *" }));
+  await waitFor(() => schedulerLogs.filter((message) => message.includes("Schedule updated")).length === 2);
+  assert.equal(notifications.length, 1);
 });

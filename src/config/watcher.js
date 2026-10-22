@@ -12,6 +12,7 @@ export async function createConfigWatcher(
   let loading = false;
   let pending = false;
   let closed = false;
+  const subscribers = new Set();
 
   async function reload() {
     if (closed || loading) return;
@@ -22,6 +23,13 @@ export async function createConfigWatcher(
       if (!closed) {
         currentConfig = nextConfig;
         logger.log("[CONFIG] Configuration reloaded successfully.");
+        for (const subscriber of subscribers) {
+          try {
+            subscriber();
+          } catch {
+            logger.error("[CONFIG] Configuration subscriber failed.");
+          }
+        }
       }
     } catch (error) {
       if (!closed) {
@@ -52,9 +60,14 @@ export async function createConfigWatcher(
 
   return {
     getConfig: () => currentConfig,
+    subscribe(callback) {
+      if (!closed) subscribers.add(callback);
+      return () => subscribers.delete(callback);
+    },
     close() {
       closed = true;
       clearTimeout(timer);
+      subscribers.clear();
       watcher.close();
     },
   };
