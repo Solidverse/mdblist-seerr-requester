@@ -1,0 +1,76 @@
+# ==========================================
+# MDBList Seerr Requester
+# ==========================================
+
+# Cron schedule for automatic execution
+# Example: "0 */6 * * *" = every 6 hours
+scheduleCron: "0 */6 * * *"
+
+# Run immediately when the container starts
+runOnStartup: true
+
+# Test mode: no actual requests or changes to request history
+dryRun: true
+
+# ==========================================
+# API Configuration
+# ==========================================
+
+# Seerr server URL
+seerrUrl: "http://seerr:5055"
+
+# Seerr API key with administrator permissions
+seerrApiKey: "YOUR_SEERR_API_KEY"
+
+# MDBList API key
+mdblistApiKey: "YOUR_MDBLIST_API_KEY"
+
+# ==========================================
+# MDBList Lists
+# ==========================================
+
+# Lists are processed in the order defined below.
+# The first eligible list takes priority.
+#
+# Seerr users are automatically created with the
+# "mslr_" prefix to avoid conflicts with existing users.
+#
+# The same requestUsername can be used across multiple
+# lists, even with different approval settings.
+#
+# Approval is handled per request without changing
+# user permissions.
+
+lists:
+  # ----------------------------------------
+  # List 1 - Trending
+  # ----------------------------------------
+
+  # MDBList list identifier
+  - listId: "YOUR_MDBLIST_LIST_ID"
+
+    # Seerr username (prefix is added automatically)
+    requestUsername: "Trending"
+
+    # Automatically approve movie requests
+    autoApproveMovies: true
+
+    # Automatically approve TV series requests
+    autoApproveSeries: false
+
+    # Maximum number of requests per run
+    limit: 10
+
+    # Enable or disable this list
+    enabled: true
+
+  # ----------------------------------------
+  # List 2 - Popular
+  # ----------------------------------------
+
+  - listId: "YOUR_SECOND_MDBLIST_LIST_ID"
+    requestUsername: "Popular"
+    autoApproveMovies: false
+    autoApproveSeries: false
+    limit: 5
+    enabled: true
