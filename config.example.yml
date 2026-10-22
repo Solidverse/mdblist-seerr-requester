@@ -46,7 +46,7 @@ lists:
   # List 1 - Trending
   # ----------------------------------------
 
-  # MDBList list identifier
+  # MDBList numeric list ID or username/slug (for a shared movie/series list)
   - listId: "YOUR_MDBLIST_LIST_ID"
 
     # Seerr username (prefix is added automatically)
