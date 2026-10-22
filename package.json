@@ -11,7 +11,9 @@
     "test:integration": "node --env-file=integration-test.env --test tests/mdblist.integration.test.js",
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "update:mdblist-openapi": "node scripts/update-mdblist-openapi.js"
+    "update:mdblist-openapi": "node scripts/update-mdblist-openapi.js",
+    "update:seerr-openapi": "node scripts/update-seerr-openapi.js",
+    "update:openapi": "npm run update:mdblist-openapi && npm run update:seerr-openapi"
   },
   "repository": {
     "type": "git",
