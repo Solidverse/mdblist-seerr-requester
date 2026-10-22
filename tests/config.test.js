@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { parse, stringify } from "yaml";
 import { loadConfig } from "../src/config/loader.js";
 import { configSchema } from "../src/config/schema.js";
+import { createHistory } from "../src/db/database.js";
 
 const examplePath = new URL("../config.example.yml", import.meta.url);
 const example = parse(await readFile(examplePath, "utf8"));
@@ -95,8 +96,14 @@ test("invalid configuration prevents startup and exits non-zero", async (t) => {
 for (const signal of ["SIGTERM", "SIGINT"]) {
 test(`valid configuration allows normal startup and clean ${signal} shutdown`, { timeout: 5000 }, async (t) => {
   const path = await withConfig(t, stringify(example));
+  const historyPath = join(dirname(path), "history.db");
+  const history = createHistory(historyPath);
+  history.recordSuccessfulRequest({
+    tmdbId: 123, mediaType: "movie", sourceList: "original", seerrUser: "mslr_Original",
+  }, { dryRun: false });
+  history.close();
   const child = spawn(process.execPath, ["src/index.js"], {
-    env: { ...process.env, CONFIG_PATH: path },
+    env: { ...process.env, CONFIG_PATH: path, HISTORY_DB_PATH: historyPath },
   });
   t.after(() => { if (child.exitCode === null) child.kill("SIGKILL"); });
   let output = "";
@@ -117,5 +124,11 @@ test(`valid configuration allows normal startup and clean ${signal} shutdown`, {
   assert.equal(code, 0, errors);
   assert.match(output, /Configuration loaded successfully/);
   assert.match(output, /Application started successfully/);
+  const reopened = createHistory(historyPath);
+  try {
+    assert.equal(reopened.hasRequest(123, "movie"), true);
+  } finally {
+    reopened.close();
+  }
 });
 }

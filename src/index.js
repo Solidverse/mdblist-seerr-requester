@@ -2,14 +2,20 @@
 // Application entry point
 import { createConfigWatcher } from "./config/watcher.js";
 import { createScheduler } from "./scheduler.js";
+import { createHistory } from "./db/database.js";
 
 let configWatcher;
 let scheduler;
+let history;
 try {
   configWatcher = await createConfigWatcher();
   console.log("Configuration loaded successfully.");
+  history = createHistory();
+  console.log("[HISTORY] Database initialized successfully.");
   scheduler = createScheduler(configWatcher);
 } catch (error) {
+  history?.close();
+  configWatcher?.close();
   console.error(error.message);
   process.exit(1);
 }
@@ -27,6 +33,7 @@ async function shutdown() {
   const finished = scheduler.stop();
   configWatcher.close();
   await finished;
+  history.close();
 }
 
 process.on("SIGTERM", shutdown);
