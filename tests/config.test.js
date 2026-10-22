@@ -45,6 +45,7 @@ const invalidCases = [
   ["empty API key", (config) => { config.mdblistApiKey = "  "; }, /mdblistApiKey/],
   ["unknown global property", (config) => { config.extra = true; }, /configuration: Unknown/],
   ["unknown list property", (config) => { config.lists[0].extra = true; }, /lists.0: Unknown/],
+  ["removed list limit is rejected as an unknown property", (config) => { config.lists[0].limit = 10; }, /lists.0: Unknown/],
   ["empty lists", (config) => { config.lists = []; }, /lists/],
   ["missing list field", (config) => { delete config.lists[0].enabled; }, /lists.0.enabled/],
   ["empty list ID", (config) => { config.lists[0].listId = ""; }, /lists.0.listId/],
@@ -55,9 +56,6 @@ for (const cron of ["bad", "60 * * * *", "* * * *", "0 * * * * *", "@daily", "0 
 }
 for (const url of ["invalid", "ftp://seerr:5055", "https://"]) {
   invalidCases.push([`invalid URL ${url}`, (config) => { config.seerrUrl = url; }, /seerrUrl/]);
-}
-for (const limit of [0, -1, 1.5, "10"]) {
-  invalidCases.push([`invalid limit ${JSON.stringify(limit)}`, (config) => { config.lists[0].limit = limit; }, /lists.0.limit/]);
 }
 for (const [name, mutate, expected] of invalidCases) {
   test(name, async (t) => {

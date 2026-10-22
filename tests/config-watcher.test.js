@@ -75,9 +75,9 @@ test("watcher recovers after invalid YAML is fixed", async (t) => {
 
 test("rapid filesystem events are debounced into one reload of the latest configuration", async (t) => {
   const { path, watcher, logs, errors } = await setup(t);
-  for (let limit = 1; limit <= 5; limit++) {
+  for (let version = 1; version <= 5; version++) {
     const next = structuredClone(example);
-    next.lists[0].limit = limit;
+    next.lists[0].requestUsername = `Trending${version}`;
     await writeFile(path, stringify(next));
     await delay(30);
   }
@@ -85,7 +85,7 @@ test("rapid filesystem events are debounced into one reload of the latest config
   await delay(400);
   assert.equal(logs.length, 1);
   assert.equal(errors.length, 0);
-  assert.equal(watcher.getConfig().lists[0].limit, 5);
+  assert.equal(watcher.getConfig().lists[0].requestUsername, "Trending5");
 });
 
 test("atomic file replacement and subsequent saves are detected", async (t) => {

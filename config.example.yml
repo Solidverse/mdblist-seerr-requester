@@ -58,9 +58,6 @@ lists:
     # Automatically approve TV series requests
     autoApproveSeries: false
 
-    # Maximum number of requests per run
-    limit: 10
-
     # Enable or disable this list
     enabled: true
 
@@ -72,5 +69,4 @@ lists:
     requestUsername: "Popular"
     autoApproveMovies: false
     autoApproveSeries: false
-    limit: 5
     enabled: true

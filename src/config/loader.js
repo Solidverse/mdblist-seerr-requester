@@ -31,13 +31,11 @@ export async function loadConfig(configPath = process.env.CONFIG_PATH ?? "config
           ? issue.message
           : issue.code === "invalid_format"
             ? "Must be a valid HTTP/HTTPS URL."
-            : issue.path.at(-1) === "limit"
-              ? "Must be a positive integer."
-              : issue.code === "too_small" && issue.path.at(-1) === "lists"
-                ? "Must contain at least one list."
-                : issue.code === "invalid_type"
-                  ? `Required; must be ${issue.expected === "array" ? "an array" : `a ${issue.expected}`}.`
-                  : "Invalid value.";
+            : issue.code === "too_small" && issue.path.at(-1) === "lists"
+              ? "Must contain at least one list."
+              : issue.code === "invalid_type"
+                ? `Required; must be ${issue.expected === "array" ? "an array" : `a ${issue.expected}`}.`
+                : "Invalid value.";
       return `${property}: ${message}`;
     });
     throw new Error(`Invalid configuration:\n${errors.join("\n")}`);

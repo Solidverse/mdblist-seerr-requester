@@ -23,7 +23,6 @@ const listSchema = z.strictObject({
   requestUsername: nonEmptyString,
   autoApproveMovies: z.boolean(),
   autoApproveSeries: z.boolean(),
-  limit: z.number().int().positive(),
   enabled: z.boolean(),
 });
 
