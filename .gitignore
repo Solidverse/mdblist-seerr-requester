@@ -6,6 +6,7 @@ node_modules/
 
 # Local configuration
 config.yml
+integration-test.env
 
 # SQLite
 *.db
