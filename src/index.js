@@ -1,9 +1,10 @@
 // MDBList Seerr Requester
 // Application entry point
-import { loadConfig } from "./config/loader.js";
+import { createConfigWatcher } from "./config/watcher.js";
 
+let configWatcher;
 try {
-  await loadConfig();
+  configWatcher = await createConfigWatcher();
   console.log("Configuration loaded successfully.");
 } catch (error) {
   console.error(error.message);
@@ -14,13 +15,17 @@ console.log("MDBList Seerr Requester");
 console.log(`Node.js: ${process.version}`);
 console.log(`Environment: ${process.env.NODE_ENV}`);
 
-console.log("Application started successfully.");
-
 // Keep the application running
 const timer = setInterval(() => {}, 60_000);
 
 // Graceful shutdown
-process.on("SIGTERM", () => {
+function shutdown() {
   console.log("Application shutting down...");
+  configWatcher.close();
   clearInterval(timer);
-});
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+
+console.log("Application started successfully.");

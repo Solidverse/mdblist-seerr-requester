@@ -92,7 +92,8 @@ test("invalid configuration prevents startup and exits non-zero", async (t) => {
   assert.doesNotMatch(result.stdout, /Application started successfully/);
 });
 
-test("valid configuration allows normal startup", { timeout: 5000 }, async (t) => {
+for (const signal of ["SIGTERM", "SIGINT"]) {
+test(`valid configuration allows normal startup and clean ${signal} shutdown`, { timeout: 5000 }, async (t) => {
   const path = await withConfig(t, stringify(example));
   const child = spawn(process.execPath, ["src/index.js"], {
     env: { ...process.env, CONFIG_PATH: path },
@@ -100,10 +101,14 @@ test("valid configuration allows normal startup", { timeout: 5000 }, async (t) =
   t.after(() => { if (child.exitCode === null) child.kill("SIGKILL"); });
   let output = "";
   let errors = "";
+  let stopping = false;
   child.stderr.on("data", (chunk) => { errors += chunk; });
   child.stdout.on("data", (chunk) => {
     output += chunk;
-    if (output.includes("Application started successfully.")) child.kill("SIGTERM");
+    if (!stopping && output.includes("Application started successfully.")) {
+      stopping = true;
+      child.kill(signal);
+    }
   });
   const code = await new Promise((resolve, reject) => {
     child.on("error", reject);
@@ -113,3 +118,4 @@ test("valid configuration allows normal startup", { timeout: 5000 }, async (t) =
   assert.match(output, /Configuration loaded successfully/);
   assert.match(output, /Application started successfully/);
 });
+}
