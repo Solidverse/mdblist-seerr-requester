@@ -1,3 +1,4 @@
+import { formatError, safeContext, diagnosticError } from "../utils/errors.js";
 import { createMDBListClient } from "../integrations/mdblist.js";
 import { createSeerrClient, accountName } from "../integrations/seerr.js";
 
@@ -16,13 +17,15 @@ export async function runRequestEngine(snapshot, {
     skippedSeerr: 0, submitted: 0, approved: 0, pending: 0,
     approvalFailures: 0, failed: 0, uncertain: 0, dryRun: 0,
   };
+  const context = (list, username, item) => safeContext({ list: list?.listId, account: username,
+    media: item ? `${item.mediaType}:${item.tmdbId}` : undefined }, [config.seerrApiKey, config.mdblistApiKey]);
   logger.log("[ENGINE] Starting scheduled run.");
   const prepared = [];
   for (const list of config.lists) {
     if (!list.enabled) { summary.listsSkipped++; continue; }
     try {
       const items = await mdblist.getListItems(list.listId);
-      if (!Array.isArray(items)) throw new Error();
+      if (!Array.isArray(items)) throw diagnosticError("Invalid MDBList list response.", { code: "INVALID_RESPONSE" });
       summary.titlesRetrieved += items.length;
       const valid = items.filter((item) => {
         const ok = validId(item?.tmdbId) && ["movie", "tv"].includes(item.mediaType) && typeof item.title === "string";
@@ -30,9 +33,9 @@ export async function runRequestEngine(snapshot, {
         return ok;
       });
       prepared.push({ list, items: valid });
-    } catch {
+    } catch (error) {
       summary.listsFailed++;
-      logger.error(`[ENGINE] MDBList retrieval failed for list position ${config.lists.indexOf(list) + 1}; skipping list.`);
+      logger.error(`[ENGINE] MDBList retrieval failed; skipping list. ${context(list)} ${formatError(error)}`);
     }
   }
   // Finish discovery before resolving accounts or assigning title ownership.
@@ -49,10 +52,10 @@ export async function runRequestEngine(snapshot, {
       }
       const account = await accounts.get(username);
       userId = config.dryRun ? account?.userId : account;
-      if (!validId(userId) && !(config.dryRun && userId === null && account?.wouldCreate === true)) throw new Error();
-    } catch {
+      if (!validId(userId) && !(config.dryRun && userId === null && account?.wouldCreate === true)) throw diagnosticError("Invalid service account resolution result.", { code: "INVALID_RESPONSE" });
+    } catch (error) {
       summary.listsFailed++;
-      logger.error("[ENGINE] Service account resolution failed; skipping affected list.");
+      logger.error(`[ENGINE] Service account resolution failed; skipping affected list. ${context(list, username)} ${formatError(error)}`);
       continue;
     }
     summary.listsProcessed++;
@@ -66,9 +69,9 @@ export async function runRequestEngine(snapshot, {
   for (const { item, list, userId, username } of titles.values()) {
     const { tmdbId, mediaType } = item;
     let recorded;
-    try { recorded = history.hasRequest(tmdbId, mediaType); } catch {
-      logger.error("[ENGINE] CRITICAL: History lookup failed; stopping run.");
-      throw Object.assign(new Error("[ENGINE] History lookup failed; run stopped."), { summary });
+    try { recorded = history.hasRequest(tmdbId, mediaType); } catch (error) {
+      logger.error(`[ENGINE] CRITICAL: History lookup failed; stopping run. ${context(list, username, item)} ${formatError(error)}`);
+      throw Object.assign(diagnosticError("[ENGINE] History lookup failed; run stopped."), { summary, cause: error, operation: "SQLite history lookup" });
     }
     if (recorded) {
       summary.skippedHistory++;
@@ -83,10 +86,10 @@ export async function runRequestEngine(snapshot, {
     } catch (error) {
       if (error?.uncertain) {
         summary.uncertain++;
-        logger.error(`[ENGINE] ${mediaType}:${tmdbId} UNCERTAIN; manual verification required.`);
+        logger.error(`[ENGINE] ${mediaType}:${tmdbId} UNCERTAIN; manual verification required; continuing other titles. ${context(list, username, item)} ${formatError(error)}`);
       } else {
         summary.failed++;
-        logger.error(`[ENGINE] ${mediaType}:${tmdbId} FAILED`);
+        logger.error(`[ENGINE] ${mediaType}:${tmdbId} FAILED; continuing other titles. ${context(list, username, item)} ${formatError(error)}`);
       }
       continue;
     }
@@ -114,10 +117,10 @@ export async function runRequestEngine(snapshot, {
       const inserted = history.recordSuccessfulRequest({ tmdbId, mediaType, sourceList: list.listId,
         seerrUser: username, seerrRequestId: result.requestId }, { dryRun: false });
       if (!inserted && !history.hasRequest(tmdbId, mediaType)) throw new Error();
-    } catch {
-      logger.error(`[ENGINE] CRITICAL: History persistence failed for ${mediaType}:${tmdbId}, Seerr request ${result.requestId}; stopping run without approval.`);
-      throw Object.assign(new Error("[ENGINE] Confirmed request could not be persisted; run stopped."), {
-        tmdbId, mediaType, requestId: result.requestId, summary,
+    } catch (error) {
+      logger.error(`[ENGINE] CRITICAL: History persistence failed for ${mediaType}:${tmdbId}, Seerr request ${result.requestId}; stopping run without approval. ${context(list, username, item)} ${formatError(error)}`);
+      throw Object.assign(diagnosticError("[ENGINE] Confirmed request could not be persisted; run stopped."), {
+        tmdbId, mediaType, requestId: result.requestId, summary, cause: error, operation: "SQLite history persistence",
       });
     }
     if (result.status === 1) {
@@ -126,10 +129,10 @@ export async function runRequestEngine(snapshot, {
           const approved = await seerr.approveRequest(result.requestId, { dryRun: false });
           if (approved?.id !== result.requestId || approved.status !== 2) throw new Error();
           summary.approved++;
-        } catch {
+        } catch (error) {
           summary.approvalFailures++;
           summary.pending++;
-          logger.error(`[ENGINE] Approval failed for Seerr request ${result.requestId}; history retained.`);
+          logger.error(`[ENGINE] Approval failed for Seerr request ${result.requestId}; history retained; continuing. ${context(list, username, item)} ${formatError(error)}`);
         }
       } else summary.pending++;
     }

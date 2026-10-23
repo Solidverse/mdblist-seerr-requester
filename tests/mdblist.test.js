@@ -294,3 +294,16 @@ test("client validates authentication and numeric list IDs without disclosing in
   }
   assert.equal(requests.length, 0);
 });
+
+test("MDBList 429 diagnostics preserve status and safe endpoint through bounded retries", async (t) => {
+  const { formatError } = await import("../src/utils/errors.js");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { client, requests, warnings } = setup(() => new Response("TOP_SECRET private@example.com", { status: 429 }));
+  const pending = assert.rejects(client.getListItems("1"), (error) => {
+    assert.equal(error.httpStatus, 429);
+    assert.match(formatError(error), /GET \/lists\/\{listid\}\/items.*HTTP 429 Too Many Requests/);
+    assert.doesNotMatch(formatError(error), /TOP_SECRET|private@example/); return true;
+  });
+  await tick(t, 1000); await tick(t, 2000); await pending;
+  assert.equal(requests.length, 3); assert.doesNotMatch(warnings.join(), /TOP_SECRET|private@example/);
+});

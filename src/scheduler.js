@@ -1,3 +1,4 @@
+import { formatError } from "./utils/errors.js";
 import { CronExpressionParser } from "cron-parser";
 
 // execute receives a snapshot of the validated configuration for this run.
@@ -22,9 +23,9 @@ export function createScheduler(configWatcher, { execute = async () => {}, logge
       try {
         await execute(config);
         logger.log("[SCHEDULER] Execution completed.");
-      } catch {
+      } catch (error) {
         // Execution errors may contain credentials or request details.
-        logger.error("[SCHEDULER] Execution failed.");
+        logger.error(`[SCHEDULER] Execution failed. ${formatError(error)} Scheduling continues.`);
       }
     }).finally(() => { activeExecution = undefined; });
   }

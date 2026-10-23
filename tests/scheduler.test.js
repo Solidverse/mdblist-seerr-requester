@@ -86,7 +86,9 @@ test("execution failure is sanitized and the next execution still runs", async (
   });
   scheduler.start();
   await tick(0);
-  assert.deepEqual(errors, ["[SCHEDULER] Execution failed."]);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /Execution failed.*Scheduling continues/);
+  assert.doesNotMatch(errors[0], /TOP_SECRET/);
   await tick(60_000);
   assert.equal(executions.length, 2);
 });

@@ -1,9 +1,10 @@
+import { diagnosticError, errorContext } from "../utils/errors.js";
 import { createHash } from "node:crypto";
 
 export const REQUEST_PERMISSION = 32;
 const idValid = (id) => Number.isSafeInteger(id) && id > 0;
-const fail = (message) => {
-  throw new Error(`[SEERR] ${message}`);
+const fail = (message, details = {}) => {
+  throw diagnosticError(`[SEERR] ${message}`, details);
 };
 function titleValid(id, type) {
   if (!idValid(id) || !["movie", "tv"].includes(type))
@@ -50,7 +51,12 @@ export function createSeerrClient(
     if (typeof value !== "boolean") fail("dryRun must be a boolean.");
     return config.dryRun || value;
   };
-  async function http(path, { method = "GET", body, userId, expectedStatus } = {}) {
+  async function http(path, options = {}) {
+    try { return await requestHttp(path, options); } catch (error) {
+      throw errorContext(error, { operation: `${options.method ?? "GET"} /api/v1/${path.split("?")[0]}` });
+    }
+  }
+  async function requestHttp(path, { method = "GET", body, userId, expectedStatus } = {}) {
     for (let attempt = 0; attempt < 3; attempt++) {
       let response;
       try {
@@ -68,17 +74,17 @@ export function createSeerrClient(
         });
         if (expectedStatus !== undefined && response.status !== expectedStatus) {
           await response.body?.cancel().catch(() => {});
-          throw Object.assign(new Error(`[SEERR] Unexpected submission HTTP ${response.status}.`), {
+          throw Object.assign(diagnosticError(`[SEERR] Unexpected submission HTTP ${response.status}.`), {
             httpStatus: response.status, uncertain: response.status >= 500,
           });
         }
         if (response.ok) return await response.json();
       } catch (error) {
-        if (error.httpStatus !== undefined) throw error;
+        if (error?.httpStatus !== undefined) throw error;
         if (method !== "GET")
-          fail("Write outcome uncertain; verify before retrying.");
+          fail("Write outcome uncertain; verify before retrying.", { cause: error, uncertain: true });
         if (attempt === 2)
-          fail("GET failed: network, timeout or invalid JSON.");
+          fail("GET failed: network, timeout or invalid JSON.", { cause: error, code: error instanceof SyntaxError ? "INVALID_RESPONSE" : undefined });
       }
       if (response && !response.ok) {
         await response.body?.cancel().catch(() => {});
@@ -86,9 +92,9 @@ export function createSeerrClient(
           method !== "GET" ||
           (response.status !== 429 && response.status < 500)
         )
-          fail(`HTTP ${response.status}.`);
+          fail(`HTTP ${response.status}.`, { httpStatus: response.status });
       }
-      if (attempt === 2) fail("GET retry attempts exhausted.");
+      if (attempt === 2) fail("GET retry attempts exhausted.", { httpStatus: response?.status });
       const retry = response?.headers.get("Retry-After");
       const delay = retry
         ? /^\d+$/.test(retry)
@@ -114,7 +120,7 @@ export function createSeerrClient(
         !Number.isSafeInteger(page.pageInfo?.results) ||
         page.pageInfo.results < 0
       )
-        fail("Invalid paginated response.");
+        fail("Invalid paginated response.", { operation: `GET /api/v1/${path}`, code: "INVALID_RESPONSE" });
       if (total !== undefined && total !== page.pageInfo.results)
         fail("Collection changed during pagination.");
       total = page.pageInfo.results;
@@ -152,11 +158,11 @@ export function createSeerrClient(
   }
   async function checkUser(id, dryRun) {
     const user = await http(`user/${id}`);
-    if (user.id !== id || !owned(user))
-      fail("Service account ownership could not be verified.");
+    if (user?.id !== id || !owned(user))
+      fail("Service account ownership could not be verified.", { operation: `GET /api/v1/user/${id}` });
     const permissions = await http(`user/${id}/settings/permissions`);
     if (!Number.isSafeInteger(permissions?.permissions))
-      fail("Permissions could not be verified.");
+      fail("Permissions could not be verified.", { operation: `GET /api/v1/user/${id}/settings/permissions`, code: "INVALID_RESPONSE" });
     if (permissions.permissions !== REQUEST_PERMISSION) {
       if (dryRun) return { userId: id, wouldCorrectPermissions: true };
       await http(`user/${id}/settings/permissions`, {
@@ -165,7 +171,7 @@ export function createSeerrClient(
       });
       const verified = await http(`user/${id}/settings/permissions`);
       if (verified?.permissions !== REQUEST_PERMISSION)
-        fail("Permission correction could not be verified.");
+        fail("Permission correction could not be verified.", { operation: `GET /api/v1/user/${id}/settings/permissions` });
     }
     return { userId: id };
   }
@@ -199,12 +205,12 @@ export function createSeerrClient(
               permissions: REQUEST_PERMISSION,
             },
           });
-        } catch {
+        } catch (creationError) {
           // Reconcile a concurrent create or a lost response, never repeat POST.
           const found = (await all("user")).filter(
             (u) => u.username === username && owned(u),
           );
-          if (found.length !== 1) fail("Account creation outcome uncertain.");
+          if (found.length !== 1) fail("Account creation outcome uncertain.", { cause: creationError, uncertain: true });
           user = found[0];
         }
         if (!owned(user) || user.username !== username)
@@ -252,7 +258,7 @@ export function createSeerrClient(
       (details.mediaInfo != null &&
         ![1, 2, 3, 4, 5, 6, 7].includes(details.mediaInfo.status))
     )
-      fail("Ambiguous media response.");
+      fail("Ambiguous media response.", { operation: `GET /api/v1/${mediaType}/${tmdbId}`, code: "INVALID_RESPONSE" });
     const requests = (await getExistingRequests({ refresh: force })).filter(
       (r) => r.media.tmdbId === tmdbId && r.media.mediaType === mediaType,
     );
@@ -337,7 +343,7 @@ export function createSeerrClient(
           },
         });
         if (!validRequest(request, tmdbId, mediaType, userId))
-          throw new Error();
+          throw diagnosticError("[SEERR] Invalid submission/approval response.", { code: "INVALID_RESPONSE" });
       } catch (error) {
         if (error.httpStatus !== undefined && !error.uncertain) {
           uncertain.delete(key);
@@ -352,8 +358,8 @@ export function createSeerrClient(
             validRequest(r, tmdbId, mediaType, userId),
           );
         } catch { /* Failed reconciliation remains uncertain. */ }
-        throw Object.assign(new Error("[SEERR] Submission outcome uncertain; verify before retrying."), {
-          uncertain: true,
+        throw Object.assign(diagnosticError("[SEERR] Submission outcome uncertain; verify before retrying."), {
+          uncertain: true, cause: error, operation: "POST /api/v1/request",
           ...(candidates.length === 1 ? { candidateRequestId: candidates[0].id } : {}),
         });
       }
@@ -383,7 +389,7 @@ export function createSeerrClient(
         try {
           const approved = await approveRequest(request.id, { dryRun: false });
           if (!validRequest(approved, tmdbId, mediaType, userId))
-            throw new Error();
+            throw diagnosticError("[SEERR] Invalid submission/approval response.", { code: "INVALID_RESPONSE" });
           result.status = approved.status;
           request.status = approved.status;
         } catch {

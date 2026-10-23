@@ -1,3 +1,4 @@
+import { diagnosticError } from "../utils/errors.js";
 import { DatabaseSync } from "node:sqlite";
 
 function positiveInteger(value, field) {
@@ -44,9 +45,9 @@ export function createHistory(path = process.env.HISTORY_DB_PATH ?? "/config/his
       ON CONFLICT (tmdb_id, media_type) DO NOTHING
     `);
     remove = db.prepare("DELETE FROM requests WHERE tmdb_id = ? AND media_type = ?");
-  } catch {
+  } catch (cause) {
     db?.close();
-    throw new Error("History database could not be opened or initialized. Check HISTORY_DB_PATH and directory permissions.");
+    throw diagnosticError("History database could not be opened or initialized. Check HISTORY_DB_PATH and directory permissions.", { cause, operation: "SQLite initialization" });
   }
 
   let closed = false;

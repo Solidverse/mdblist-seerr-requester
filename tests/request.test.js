@@ -149,3 +149,50 @@ test("scheduler passes snapshots, prevents overlap, recovers after failure and w
   await scheduler.stop(); assert.equal(calls, 2); assert.equal(s.history.hasRequest(1, "movie"), false);
   t.mock.timers.tick(120_000); await setImmediate(); assert.equal(calls, 2);
 });
+
+test("real client HTTP 403 during account lookup reaches engine logs with safe context", async (t) => {
+  const { createSeerrClient } = await import("../src/integrations/seerr.js");
+  const s = await setup(t, { config: { dryRun: true, seerrUrl: "http://seerr:5055", seerrApiKey: "SECRET_KEY", lists: [list("garycrawfordgc/top-movies-of-the-week", { requestUsername: "Test" })] } });
+  let calls = 0;
+  s.deps.seerrFactory = (config) => createSeerrClient(config, { fetchImpl: async (_url, args) => {
+    calls++; assert.equal(args.method, "GET");
+    return new Response('SECRET_KEY Authorization X-Api-Key private@example.com', { status: 403 });
+  } });
+  const result = await s.run();
+  assert.equal(result.listsFailed, 1); assert.equal(calls, 1);
+  const logs = s.logs.join("\n");
+  assert.match(logs, /GET \/api\/v1\/user/); assert.match(logs, /HTTP 403 Forbidden/);
+  assert.match(logs, /garycrawfordgc\/top-movies-of-the-week/); assert.match(logs, /mslr_Test/);
+  assert.doesNotMatch(logs, /SECRET_KEY|Authorization|X-Api-Key|private@example/);
+});
+
+for (const stage of ["retrieve", "account", "submit", "approve", "history"]) {
+  test(`diagnostics preserve safe metadata and actions for ${stage}`, async (t) => {
+    const error = Object.assign(new Error("SECRET Authorization: token private@example.com https://user:pass@host/?apikey=SECRET"), {
+      operation: stage === "retrieve" ? "GET /lists/{listid}/items" : "POST /api/v1/request",
+      httpStatus: stage === "retrieve" ? 429 : 500, code: "ECONNREFUSED", uncertain: stage === "submit",
+    });
+    const options = { config: { lists: [list("a", { autoApproveMovies: true })] } };
+    options[stage] = () => { throw error; };
+    const s = await setup(t, options);
+    if (stage === "history") s.deps.history = { hasRequest: () => { throw error; } };
+    if (stage === "history") await assert.rejects(s.run(), /History lookup/); else await s.run();
+    const logs = s.logs.join("\n");
+    assert.match(logs, stage === "retrieve" ? /HTTP 429 Too Many Requests/ : /HTTP 500 Internal Server Error/);
+    assert.match(logs, /ECONNREFUSED/);
+    assert.doesNotMatch(logs, /SECRET|Authorization|private@example|user:pass/);
+    if (stage === "submit") assert.match(logs, /UNCERTAIN.*manual verification/);
+    if (stage === "history") assert.match(logs, /stopping run/);
+  });
+}
+
+test("unsafe error metadata, cyclic causes and context secrets are never printed", async () => {
+  const { formatError, safeContext } = await import("../src/utils/errors.js");
+  const error = Object.assign(new Error("SECRET private@example.com"), {
+    operation: "GET https://user:SECRET@host/?apikey=SECRET", code: "SECRET",
+    httpStatus: "403 SECRET", candidateRequestId: "SECRET", headers: { Authorization: "SECRET" },
+  });
+  error.cause = error;
+  assert.doesNotMatch(formatError(error), /SECRET|private@example|Authorization|https:/);
+  assert.doesNotMatch(safeContext({ list: "SECRET", account: "private@example.com", url: "https://host/?apikey=SECRET" }, ["SECRET"]), /SECRET|private@example|https:/);
+});

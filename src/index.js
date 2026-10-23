@@ -1,3 +1,4 @@
+import { formatError } from "./utils/errors.js";
 // MDBList Seerr Requester
 // Application entry point
 import { createConfigWatcher } from "./config/watcher.js";
@@ -20,7 +21,7 @@ try {
 } catch (error) {
   history?.close();
   configWatcher?.close();
-  console.error(error.message);
+  console.error(configWatcher ? formatError(error) : error.message);
   process.exit(1);
 }
 

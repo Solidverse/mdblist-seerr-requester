@@ -1,3 +1,4 @@
+import { diagnosticError, errorContext, formatError } from "../utils/errors.js";
 import { createHash } from "node:crypto";
 
 const PAGE_SIZE = 100;
@@ -14,7 +15,7 @@ function retryDelay(response, attempt) {
       : Date.parse(value) - Date.now();
     if (Number.isFinite(milliseconds)) {
       // Never retry earlier than requested due to Node's timer overflow.
-      if (milliseconds > 2 ** 31 - 1) throw new Error("[MDBLIST] Retry-After exceeds the supported wait time.");
+      if (milliseconds > 2 ** 31 - 1) throw diagnosticError("[MDBLIST] Retry-After exceeds the supported wait time.");
       return Math.max(0, milliseconds);
     }
   }
@@ -36,39 +37,41 @@ export function createMDBListClient(config, { fetchImpl = globalThis.fetch, logg
       let response;
       let text;
       let failure;
+      let cause;
       try {
         response = await fetchImpl(url, {
           signal: AbortSignal.timeout(TIMEOUT_MS), headers: { Accept: "application/json" }, redirect: "error",
         });
         if (response.ok) text = await response.text();
-      } catch {
+      } catch (error) {
+        cause = error;
         // Native fetch errors can include the URL with its API key.
         failure = "Network failure or request timeout.";
       }
       if (!failure && response.ok) {
         let data;
         try { data = JSON.parse(text); } catch {
-          throw new Error("[MDBLIST] Invalid JSON response; list retrieval failed.");
+          throw diagnosticError("[MDBLIST] Invalid JSON response; list retrieval failed.", { code: "INVALID_RESPONSE" });
         }
         return { data, headers: response.headers };
       }
       if (response && !response.ok) {
         await response.body?.cancel().catch(() => {});
         const status = response.status;
-        if (status === 401 || status === 403) throw new Error("[MDBLIST] Authentication failed (401/403).");
-        if (status === 404) throw new Error("[MDBLIST] List not found (404).");
+        if (status === 401 || status === 403) throw diagnosticError("[MDBLIST] Authentication failed (401/403).", { httpStatus: status });
+        if (status === 404) throw diagnosticError("[MDBLIST] List not found (404).", { httpStatus: status });
         failure = `HTTP ${status}; list retrieval failed.`;
-        if (status !== 429 && status !== 408 && status < 500) throw new Error(`[MDBLIST] ${failure}`);
+        if (status !== 429 && status !== 408 && status < 500) throw diagnosticError(`[MDBLIST] ${failure}`, { httpStatus: status });
       }
-      if (attempt === ATTEMPTS - 1) throw new Error(`[MDBLIST] ${failure} Retry attempts exhausted.`);
-      logger.warn("[MDBLIST] Temporary request failure; retrying.");
+      if (attempt === ATTEMPTS - 1) throw diagnosticError(`[MDBLIST] ${failure} Retry attempts exhausted.`, { httpStatus: response?.status, cause });
+      logger.warn(`[MDBLIST] Temporary request failure; retrying. ${formatError(errorContext(cause, { operation: "GET /lists/{listid}/items", httpStatus: response?.status }))}`);
       await new Promise((resolve) => setTimeout(resolve, retryDelay(response, attempt)));
     }
   }
 
   async function getListItems(listId) {
     if (typeof listId !== "string" || (!(/^\d+$/.test(listId) && /[1-9]/.test(listId)) && !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/.test(listId))) {
-      throw new TypeError("[MDBLIST] listId must be a positive numeric ID string or username/slug.");
+      throw diagnosticError("[MDBLIST] listId must be a positive numeric ID string or username/slug.", {}, TypeError);
     }
     const titles = [];
     const pages = new Set();
@@ -88,22 +91,22 @@ export function createMDBListClient(config, { fetchImpl = globalThis.fetch, logg
           ...(data.shows ?? []).map((item) => ({ item, mediaType: "tv", apiType: "show" })),
         ];
       } else {
-        throw new Error("[MDBLIST] Unexpected list response structure.");
+        throw diagnosticError("[MDBLIST] Unexpected list response structure.");
       }
       if (items.some(({ item, apiType }) => !isObject(item) || !["movie", "show"].includes(apiType) || typeof item.title !== "string"
         || (item.mediatype !== undefined && item.mediatype !== apiType))) {
-        throw new Error("[MDBLIST] Unexpected list item structure.");
+        throw diagnosticError("[MDBLIST] Unexpected list item structure.");
       }
       // Count headers can describe only this page, not the complete list.
       const more = headers.get("X-Has-More")?.trim().toLowerCase();
       if (more !== "true" && more !== "false") {
-        throw new Error("[MDBLIST] Missing or invalid X-Has-More; completeness cannot be verified.");
+        throw diagnosticError("[MDBLIST] Missing or invalid X-Has-More; completeness cannot be verified.");
       }
       offset += items.length;
-      if (!Number.isSafeInteger(offset)) throw new Error("[MDBLIST] Invalid pagination offset.");
+      if (!Number.isSafeInteger(offset)) throw diagnosticError("[MDBLIST] Invalid pagination offset.");
       const hasMore = more === "true";
       if (hasMore && items.length === 0) {
-        throw new Error("[MDBLIST] Incomplete pagination: empty page with more items.");
+        throw diagnosticError("[MDBLIST] Incomplete pagination: empty page with more items.");
       }
       if (items.length) {
         // Detect ignored offsets and repeated pages without dropping any titles.
@@ -111,7 +114,7 @@ export function createMDBListClient(config, { fetchImpl = globalThis.fetch, logg
           mediaType, item.ids?.tmdb, item.id, item.imdb_id,
         ])).sort();
         const fingerprint = createHash("sha256").update(JSON.stringify(identity)).digest("hex");
-        if (pages.has(fingerprint)) throw new Error("[MDBLIST] Repeated page detected; pagination made no progress.");
+        if (pages.has(fingerprint)) throw diagnosticError("[MDBLIST] Repeated page detected; pagination made no progress.");
         pages.add(fingerprint);
       }
       for (const { item, mediaType } of items) {
@@ -132,13 +135,18 @@ export function createMDBListClient(config, { fetchImpl = globalThis.fetch, logg
     return titles.sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity));
   }
 
+  async function getListItemsWithDiagnostics(listId) {
+    try { return await getListItems(listId); } catch (error) {
+      throw errorContext(error, { operation: "GET /lists/{listid}/items" });
+    }
+  }
   return {
-    getListItems,
+    getListItems: getListItemsWithDiagnostics,
     async getEnabledLists() {
       if (!Array.isArray(lists)) throw new TypeError("[MDBLIST] A configuration lists array is required.");
       const results = [];
       for (const list of lists) {
-        if (list.enabled) results.push({ ...list, items: await getListItems(list.listId) });
+        if (list.enabled) results.push({ ...list, items: await getListItemsWithDiagnostics(list.listId) });
       }
       return results;
     },

@@ -301,3 +301,35 @@ test("server error with a matching request remains uncertain", async () => {
     return true;
   });
 });
+
+for (const status of [401, 403]) {
+  test(`user lookup preserves HTTP ${status} and operation without extra calls`, async () => {
+    const { formatError } = await import("../src/utils/errors.js");
+    const { client, calls } = setup({ override: () => new Response("SECRET private@example.com", { status }) });
+    await assert.rejects(client.getOrCreateUser("Trending"), (error) => {
+      assert.equal(error.httpStatus, status); assert.equal(error.operation, "GET /api/v1/user");
+      assert.match(formatError(error), new RegExp(`HTTP ${status}`));
+      assert.doesNotMatch(formatError(error), /SECRET|private@example/); return true;
+    });
+    assert.equal(calls.length, 1);
+  });
+}
+for (const kind of ["network", "timeout", "invalid JSON"]) {
+  test(`GET diagnostics distinguish ${kind} after existing bounded retries`, async (t) => {
+    const { formatError } = await import("../src/utils/errors.js");
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const { client, calls } = setup({ override: () => {
+      if (kind === "invalid JSON") return new Response("SECRET malformed");
+      if (kind === "timeout") throw new DOMException("SECRET", "TimeoutError");
+      throw Object.assign(new Error("SECRET"), { cause: Object.assign(new Error("private@example.com"), { code: "ECONNREFUSED" }) });
+    } });
+    const pending = assert.rejects(client.getUsers(), (error) => {
+      const text = formatError(error);
+      assert.match(text, /GET \/api\/v1\/user/);
+      assert.match(text, kind === "network" ? /ECONNREFUSED/ : kind === "timeout" ? /TIMEOUT/ : /INVALID_RESPONSE/);
+      assert.doesNotMatch(text, /SECRET|private@example/); return true;
+    });
+    await setImmediate(); t.mock.timers.tick(1000); await setImmediate(); t.mock.timers.tick(2000);
+    await pending; assert.equal(calls.length, 3);
+  });
+}
