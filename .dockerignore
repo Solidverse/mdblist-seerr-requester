@@ -8,11 +8,22 @@
 node_modules
 tests
 coverage
+dev-config
+scripts
+docs
+.agents
+.codex
+.aws
 
 # Environment & secrets
 .env
 .env.*
 config.yml
+integration-test.env*
+*.env
+*.env.*
+*.pem
+*.key
 
 # SQLite databases
 data

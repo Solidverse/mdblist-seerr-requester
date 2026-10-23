@@ -4,7 +4,11 @@ FROM node:24-bookworm-slim
 WORKDIR /app
 
 # Production environment
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    CONFIG_PATH=/config/config.yml
+
+# Image-owned directory only; host bind mounts retain their own ownership.
+RUN mkdir -p /config && chown node:node /config
 
 # Install dependencies
 COPY package*.json ./
