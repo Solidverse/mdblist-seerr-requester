@@ -14,7 +14,14 @@ function setup(options = {}) {
     fetchImpl: async (url, init) => {
       const path = url.pathname.replace("/api/v1/", "");
       const body = init.body ? JSON.parse(init.body) : undefined;
-      calls.push({ path, ...init, body });
+      const { password, ...publicBody } = body ?? {};
+      calls.push({ path, ...init, body: body ? publicBody : undefined,
+        ...(password !== undefined ? { passwordInfo: {
+          length: password.length, bytes: Buffer.from(password, "base64url").length,
+          fingerprint: createHash("sha256").update(password).digest("hex"),
+          isBase64url: /^[A-Za-z0-9_-]+$/.test(password),
+          predictable: password.includes(body.username) || password === "SECRET",
+        } } : {}) });
       if (options.override) {
         const response = options.override(path, init, body, state);
         if (response) return response;
@@ -24,7 +31,7 @@ function setup(options = {}) {
         return Response.json({ pageInfo: { results: state.users.length }, results: state.users.slice(skip, skip + (options.pageSize ?? 100)) });
       }
       if (path === "user") {
-        const created = { id: 2, ...body }; state.users.push(created); return Response.json(created);
+        const created = { id: 2, ...publicBody }; state.users.push(created); return Response.json(created);
       }
       if (path === "user/2") return Response.json(state.users.find((u) => u.id === 2));
       if (path === "user/2/settings/permissions") {
@@ -57,6 +64,8 @@ test("new user uses prefix, deterministic invalid-domain email and permission 32
   assert.deepEqual(ids, [2, 2]);
   assert.deepEqual(calls.find((c) => c.method === "POST").body, { username, email, permissions: 32 });
   assert.equal(calls.filter((c) => c.path === "user" && c.method === "POST").length, 1);
+  const password = calls.find((c) => c.path === "user" && c.method === "POST").passwordInfo;
+  assert.ok(password.length >= 43 && password.bytes >= 32 && password.isBase64url && !password.predictable, "Creation must use a cryptographically random password.");
 });
 test("user lookup handles pagination", async () => {
   const { client } = setup({ pageSize: 1, users: [{ id: 3, username: "Other", email: "other@example.com" }, user()] });
@@ -333,3 +342,122 @@ for (const kind of ["network", "timeout", "invalid JSON"]) {
     await pending; assert.equal(calls.length, 3);
   });
 }
+
+test("new accounts get distinct random passwords while existing users receive none", async () => {
+  const fingerprints = [];
+  for (const name of ["Trending", "Popular"]) {
+    const s = setup({ users: [] });
+    await s.client.getOrCreateUser(name);
+    const creation = s.calls.find((c) => c.path === "user" && c.method === "POST");
+    assert.ok(creation.passwordInfo.bytes >= 32 && !creation.passwordInfo.predictable);
+    fingerprints.push(creation.passwordInfo.fingerprint);
+    await s.client.getOrCreateUser(name);
+    assert.equal(s.calls.filter((c) => c.passwordInfo).length, 1);
+  }
+  assert.ok(fingerprints[0] !== fingerprints[1], "Each new account must receive independent random bytes.");
+});
+
+test("email-disabled server accepts explicit password and default ADMIN permissions are removed", async () => {
+  const { client, calls, state } = setup({ users: [], permissions: 2, override: (path, init, body) => {
+    if (path === "user" && init.method === "POST" && !body.password) return new Response(null, { status: 500 });
+  } });
+  assert.equal(await client.getOrCreateUser("Trending"), 2);
+  assert.equal(state.permissions, 32);
+  const permissions = calls.filter((c) => c.path.endsWith("settings/permissions"));
+  assert.deepEqual(permissions.map((c) => c.method), ["GET", "POST", "GET"]);
+  assert.deepEqual(permissions[1].body, { permissions: 32 });
+});
+
+for (const failure of ["refused", "http", "verification"]) {
+  test(`created account with failed permission correction (${failure}) is not usable or replaced`, async () => {
+    const { client, calls, state } = setup({ users: [], permissions: 2, refusePermissions: failure === "refused",
+      override: (path, init) => {
+        if (path.endsWith("settings/permissions") && failure === "http" && init.method === "POST") return new Response(null, { status: 403 });
+        if (path.endsWith("settings/permissions") && failure === "verification" && init.method === "GET") return Response.json({});
+      },
+    });
+    await assert.rejects(client.getOrCreateUser("Trending"));
+    await assert.rejects(client.getOrCreateUser("Trending"));
+    assert.equal(state.users.length, 1);
+    assert.equal(calls.filter((c) => c.path === "user" && c.method === "POST").length, 1);
+    assert.ok(!calls.some((c) => c.path === "request"));
+  });
+}
+
+for (const outcome of ["lost", 500, 409]) {
+  test(`ambiguous/colliding user creation (${outcome}) reconciles exact owned account without another POST`, async () => {
+    const { client, calls, state } = setup({ users: [], permissions: 2,
+      override: (path, init, body, state) => {
+        if (path === "user" && init.method === "POST") {
+          state.users.push({ id: 2, username: body.username, email: body.email });
+          if (outcome === "lost") throw new Error("Lost response");
+          return new Response(null, { status: outcome });
+        }
+      },
+    });
+    assert.equal(await client.getOrCreateUser("Trending"), 2);
+    assert.equal(state.permissions, 32);
+    assert.equal(calls.filter((c) => c.path === "user" && c.method === "POST").length, 1);
+  });
+}
+
+test("passwords are absent from creation failures, cause metadata and diagnostics", async () => {
+  const { formatError } = await import("../src/utils/errors.js");
+  let secret;
+  const { client, calls } = setup({ users: [], override: (path, init, body) => {
+    if (path === "user" && init.method === "POST") {
+      secret = body.password;
+      // Deliberately hostile transport error echoing the full secret payload.
+      throw Object.assign(new Error(secret), { password: secret, body });
+    }
+  } });
+  await assert.rejects(client.getOrCreateUser("Trending"), (error) => {
+    assert.equal(error.uncertain, true);
+    assert.ok(typeof secret === "string" && secret.length >= 43);
+    const serialized = JSON.stringify(error, Object.getOwnPropertyNames(error));
+    assert.ok(!serialized.includes(secret) && !formatError(error).includes(secret) && !error.message.includes(secret), "Creation error must not retain the password.");
+    for (let cause = error.cause; cause; cause = cause.cause) {
+      assert.ok(!JSON.stringify(cause, Object.getOwnPropertyNames(cause)).includes(secret), "Cause must not retain credentials.");
+    }
+    return true;
+  });
+  assert.equal(calls.filter((c) => c.path === "user" && c.method === "POST").length, 1);
+});
+
+test("dry-run missing user sends no password or writes", async () => {
+  const { client, calls } = setup({ users: [], dryRun: true });
+  assert.equal((await client.getOrCreateUser("Trending")).wouldCreate, true);
+  assert.ok(calls.every((c) => c.method === "GET" && !c.passwordInfo && c.body === undefined));
+});
+
+test("creation without email verifies ownership and permissions through authenticated GET", async () => {
+  const { client, calls, state } = setup({ users: [], permissions: 2,
+    override: (path, init, body, state) => {
+      if (path === "user" && init.method === "POST") {
+        state.users.push({ id: 2, username: body.username, email: body.email });
+        return Response.json({ id: 2, username: body.username }, { status: 201 });
+      }
+    },
+  });
+  assert.equal(await client.getOrCreateUser("Trending"), 2);
+  assert.equal(state.permissions, 32);
+  const post = calls.findIndex((c) => c.path === "user" && c.method === "POST");
+  assert.deepEqual(calls.slice(post + 1).map((c) => `${c.method} ${c.path}`), [
+    "GET user/2", "GET user/2/settings/permissions",
+    "POST user/2/settings/permissions", "GET user/2/settings/permissions",
+  ]);
+});
+
+test("filtered creation response does not bypass ownership verification", async () => {
+  const { client, calls } = setup({ users: [],
+    override: (path, init, body, state) => {
+      if (path === "user" && init.method === "POST") {
+        state.users.push({ id: 2, username: body.username, email: "unrelated@example.com" });
+        return Response.json({ id: 2, username: body.username }, { status: 201 });
+      }
+    },
+  });
+  await assert.rejects(client.getOrCreateUser("Trending"), /ownership could not be verified/);
+  assert.ok(!calls.some((c) => c.path.endsWith("settings/permissions")));
+  assert.equal(calls.filter((c) => c.path === "user" && c.method === "POST").length, 1);
+});

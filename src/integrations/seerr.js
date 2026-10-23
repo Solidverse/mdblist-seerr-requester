@@ -1,5 +1,5 @@
-import { diagnosticError, errorContext } from "../utils/errors.js";
-import { createHash } from "node:crypto";
+import { diagnosticError, errorContext, formatError } from "../utils/errors.js";
+import { createHash, randomBytes } from "node:crypto";
 
 export const REQUEST_PERMISSION = 32;
 const idValid = (id) => Number.isSafeInteger(id) && id > 0;
@@ -202,19 +202,35 @@ export function createSeerrClient(
             body: {
               username,
               email: emailFor(username),
+              password: randomBytes(32).toString("base64url"),
               permissions: REQUEST_PERMISSION,
             },
           });
         } catch (creationError) {
           // Reconcile a concurrent create or a lost response, never repeat POST.
-          const found = (await all("user")).filter(
-            (u) => u.username === username && owned(u),
-          );
-          if (found.length !== 1) fail("Account creation outcome uncertain.", { cause: creationError, uncertain: true });
+          // Transport exceptions may echo the creation payload. Keep only safe
+          // diagnostics, never the original exception/body containing a password.
+          const safeCreationError = diagnosticError(formatError(creationError), {
+            httpStatus: creationError.httpStatus, operation: creationError.operation,
+          });
+          let found;
+          try {
+            found = (await all("user")).filter((u) => u.username === username && owned(u));
+          } catch (reconciliationError) {
+            fail("Account creation outcome uncertain; account lookup also failed.", {
+              cause: safeCreationError, uncertain: true,
+              reconciliation: diagnosticError(formatError(reconciliationError)),
+            });
+          }
+          if (found.length !== 1) fail("Account creation outcome uncertain.", {
+            cause: safeCreationError, uncertain: true,
+          });
           user = found[0];
         }
-        if (!owned(user) || user.username !== username)
-          fail("Created account could not be verified.");
+        // Seerr filters email out of the creation response. Full ownership
+        // and permissions are verified through the subsequent authenticated GET.
+        if (!idValid(user?.id) || user.username !== username)
+          fail("Invalid created account response.");
       }
       const verified = await verifyUser(user.id, dry);
       return dry
