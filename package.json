@@ -7,8 +7,9 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "node --test tests/config.test.js tests/config-watcher.test.js tests/database.test.js tests/mdblist.test.js tests/scheduler.test.js",
+    "test": "node --test tests/config.test.js tests/config-watcher.test.js tests/database.test.js tests/mdblist.test.js tests/scheduler.test.js tests/seerr.test.js",
     "test:integration": "node --env-file=integration-test.env --test tests/mdblist.integration.test.js",
+    "test:integration:seerr": "node --env-file=integration-test.env --test tests/seerr.integration.test.js",
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "update:mdblist-openapi": "node scripts/update-mdblist-openapi.js",
