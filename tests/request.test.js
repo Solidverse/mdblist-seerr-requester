@@ -1,0 +1,151 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { setImmediate } from "node:timers/promises";
+import { createHistory } from "../src/db/database.js";
+import { runRequestEngine } from "../src/engines/request.js";
+import { createScheduler } from "../src/scheduler.js";
+import { accountName } from "../src/integrations/seerr.js";
+const item = (id, type = "movie") => ({ tmdbId: id, mediaType: type, title: `Title ${id}` });
+test("account normalization is exported and never doubles the prefix", () => {
+  assert.equal(accountName("Trending"), "mslr_Trending");
+  assert.equal(accountName("mslr_Trending"), "mslr_Trending");
+});
+const list = (id, extra = {}) => ({ listId: id, enabled: true, requestUsername: "Trending", autoApproveMovies: false, autoApproveSeries: false, ...extra });
+async function setup(t, options = {}) {
+  const dir = await mkdtemp(join(tmpdir(), "request-engine-"));
+  const path = join(dir, "history.db");
+  const history = createHistory(options.memory ? ":memory:" : path);
+  t.after(async () => { history.close(); await rm(dir, { recursive: true, force: true }); });
+  const config = { dryRun: false, lists: [list("first")], ...options.config };
+  const calls = []; const logs = [];
+  const deps = { history, logger: { log: (m) => logs.push(m), error: (m) => logs.push(m) },
+    mdblistFactory: (snapshot) => ({ getListItems: async (id) => {
+      calls.push(["retrieve", id]);
+      if (options.retrieve) return options.retrieve(id, snapshot);
+      return options.items ?? [item(1)];
+    } }),
+    seerrFactory: (snapshot) => ({
+      getOrCreateUser: async (name, args) => {
+        calls.push(["account", name, args]);
+        if (options.account) return options.account(name, args);
+        return snapshot.dryRun ? { userId: null, wouldCreate: true } : 2;
+      },
+      createRequest: async (args) => {
+        calls.push(["submit", args]);
+        if (options.submit) return options.submit(args);
+        return snapshot.dryRun ? { submitted: false, dryRun: true, wouldSubmit: true } : {
+          submitted: true, requestId: args.tmdbId + 100, status: 1,
+          tmdbId: args.tmdbId, mediaType: args.mediaType, userId: args.userId,
+        };
+      },
+      approveRequest: async (id, args) => {
+        calls.push(["approve", id, args]);
+        assert.equal(history.hasRequest(id - 100, options.tv ? "tv" : "movie"), true, "History must precede approval");
+        if (options.approve) return options.approve(id);
+        return { id, status: 2 };
+      },
+    }),
+  };
+  return { config, deps, history, path, calls, logs, run: () => runRequestEngine(config, deps) };
+}
+
+test("one list persists a confirmed pending request and skips it on the next run", async (t) => {
+  const s = await setup(t); const summary = await s.run();
+  assert.equal(summary.submitted, 1); assert.equal(summary.pending, 1);
+  assert.equal((await s.run()).skippedHistory, 1);
+  const db = new DatabaseSync(s.path); t.after(() => db.close());
+  const row = db.prepare("SELECT * FROM requests").get();
+  assert.equal(row.source_list, "first"); assert.equal(row.seerr_user, "mslr_Trending"); assert.equal(row.seerr_request_id, 101);
+});
+test("discovery completes before ownership; YAML order and approval win over overlaps", async (t) => {
+  const s = await setup(t, { config: { lists: [list("first", { autoApproveMovies: true }), list("second", { requestUsername: "Other" })] }, items: [item(1), item(1)] });
+  const result = await s.run();
+  assert.equal(result.duplicates, 3); assert.equal(result.submitted, 1); assert.equal(result.approved, 1);
+  assert.deepEqual(s.calls.slice(0, 2), [["retrieve", "first"], ["retrieve", "second"]]);
+  assert.equal(s.calls.find(([kind]) => kind === "submit")[1].autoApprove, false);
+});
+test("failed retrieval/account lists do not claim ownership, disabled lists are not fetched", async (t) => {
+  const s = await setup(t, { config: { lists: [list("bad"), list("account", { requestUsername: "Bad" }), list("good"), list("off", { enabled: false })] },
+    retrieve: (id) => { if (id === "bad") throw new Error("SECRET"); return [item(1)]; },
+    account: (name) => { if (name === "Bad") throw new Error("SECRET"); return 2; } });
+  const r = await s.run(); assert.equal(r.listsFailed, 2); assert.equal(r.listsSkipped, 1); assert.equal(r.submitted, 1);
+  assert.ok(!s.logs.join().includes("SECRET"));
+  const db = new DatabaseSync(s.path); t.after(() => db.close());
+  assert.equal(db.prepare("SELECT source_list FROM requests").get().source_list, "good");
+});
+test("empty lists do not create accounts", async (t) => {
+  const s = await setup(t, { items: [] }); assert.equal((await s.run()).uniqueTitles, 0); assert.equal(s.calls.length, 1);
+});
+for (const tv of [false, true]) for (const approve of [false, true]) {
+  test(`per-request approval tv=${tv} enabled=${approve}`, async (t) => {
+    const s = await setup(t, { tv, items: [item(1, tv ? "tv" : "movie")], config: { lists: [list("first", { autoApproveMovies: approve, autoApproveSeries: approve })] } });
+    const r = await s.run(); assert.equal(r.approved, Number(approve)); assert.equal(r.pending, Number(!approve));
+  });
+}
+test("movie and TV with same numeric ID remain distinct, shared accounts resolve once", async (t) => {
+  const s = await setup(t, { config: { lists: [list("a"), list("b")] }, items: [item(1), item(1, "tv")] });
+  const r = await s.run(); assert.equal(r.submitted, 2); assert.equal(r.duplicates, 2);
+  assert.equal(s.calls.filter(([kind]) => kind === "account").length, 1);
+});
+for (const outcome of ["existing", "failed", "uncertain", "invalid"]) {
+  test(`${outcome} does not enter history or transfer ownership`, async (t) => {
+    const s = await setup(t, { config: { lists: [list("a"), list("b")] }, submit: () => {
+      if (outcome === "failed" || outcome === "uncertain") throw Object.assign(new Error("SECRET"), { uncertain: outcome === "uncertain" });
+      return outcome === "existing" ? { submitted: false, existing: true } : { submitted: true };
+    } });
+    const r = await s.run(); assert.equal(s.history.hasRequest(1, "movie"), false);
+    assert.equal(s.calls.filter(([kind]) => kind === "submit").length, 1);
+    assert.equal(r.skippedSeerr + r.failed + r.uncertain, 1);
+  });
+}
+test("approval failure retains durable history without resubmission", async (t) => {
+  const s = await setup(t, { config: { lists: [list("a", { autoApproveMovies: true })] }, approve: () => { throw new Error(); } });
+  const r = await s.run(); assert.equal(r.approvalFailures, 1); assert.equal(r.submitted, 1);
+  assert.equal((await s.run()).skippedHistory, 1);
+});
+test("SQLite failure stops the run before approval or other submissions", async (t) => {
+  const s = await setup(t, { items: [item(1), item(2)], config: { lists: [list("a", { autoApproveMovies: true })] } });
+  s.deps.history = { hasRequest: s.history.hasRequest, recordSuccessfulRequest() { throw new Error("SECRET"); } };
+  await assert.rejects(s.run(), (error) => { assert.equal(error.requestId, 101); assert.ok(!error.message.includes("SECRET")); return true; });
+  assert.equal(s.calls.filter(([k]) => k === "submit").length, 1); assert.ok(!s.calls.some(([k]) => k === "approve"));
+});
+test("dry-run preserves history, plans missing account and approval with first-list priority", async (t) => {
+  const s = await setup(t, { config: { dryRun: true, lists: [list("a", { autoApproveMovies: true }), list("b")] }, items: [item(1), item(2)] });
+  s.history.recordSuccessfulRequest({ tmdbId: 1, mediaType: "movie", sourceList: "original", seerrUser: "mslr_Original" }, { dryRun: false });
+  const r = await s.run(); assert.equal(r.dryRun, 1); assert.equal(r.skippedHistory, 1); assert.equal(r.duplicates, 2);
+  assert.equal(s.history.hasRequest(2, "movie"), false);
+  assert.ok(!s.calls.some(([k]) => k === "approve"));
+  const args = s.calls.find(([k]) => k === "submit")[1]; assert.equal(args.dryRun, true); assert.equal(args.autoApprove, true); assert.equal(args.userId, null); assert.equal(args.requestUsername, "Trending");
+});
+test("all 1201 titles are considered without limits", async (t) => {
+  const s = await setup(t, { memory: true, items: Array.from({ length: 1201 }, (_, i) => item(i + 1)) });
+  assert.equal((await s.run()).submitted, 1201);
+});
+test("snapshot mutations during discovery cannot alter approval, credentials or list ownership", async (t) => {
+  let s;
+  s = await setup(t, { retrieve: (_id, snapshot) => {
+    s.config.lists[0].autoApproveMovies = true; s.config.dryRun = true;
+    assert.equal(snapshot.dryRun, false); return [item(1)];
+  } });
+  const r = await s.run(); assert.equal(r.submitted, 1); assert.equal(r.approved, 0);
+});
+test("scheduler passes snapshots, prevents overlap, recovers after failure and waits at shutdown", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: new Date("2026-10-23T12:00:00Z") });
+  const s = await setup(t);
+  let config = { ...s.config, scheduleCron: "* * * * *", runOnStartup: true };
+  const gate = Promise.withResolvers(); let calls = 0;
+  const scheduler = createScheduler({ getConfig: () => config, subscribe: () => () => {} }, {
+    logger: s.deps.logger, execute: async (snapshot) => { calls++; if (calls === 1) { await gate.promise; throw new Error(); } await runRequestEngine(snapshot, s.deps); },
+  });
+  t.after(() => { gate.resolve(); return scheduler.stop(); });
+  scheduler.start(); await setImmediate();
+  config = { ...config, dryRun: true };
+  t.mock.timers.tick(60_000); await setImmediate(); assert.equal(calls, 1);
+  gate.resolve(); await setImmediate(); t.mock.timers.tick(60_000); await setImmediate();
+  await scheduler.stop(); assert.equal(calls, 2); assert.equal(s.history.hasRequest(1, "movie"), false);
+  t.mock.timers.tick(120_000); await setImmediate(); assert.equal(calls, 2);
+});

@@ -4,6 +4,8 @@ import { createConfigWatcher } from "./config/watcher.js";
 import { createScheduler } from "./scheduler.js";
 import { createHistory } from "./db/database.js";
 
+import { runRequestEngine } from "./engines/request.js";
+
 let configWatcher;
 let scheduler;
 let history;
@@ -12,7 +14,9 @@ try {
   console.log("Configuration loaded successfully.");
   history = createHistory();
   console.log("[HISTORY] Database initialized successfully.");
-  scheduler = createScheduler(configWatcher);
+  scheduler = createScheduler(configWatcher, {
+    execute: (snapshot) => runRequestEngine(snapshot, { history }),
+  });
 } catch (error) {
   history?.close();
   configWatcher?.close();

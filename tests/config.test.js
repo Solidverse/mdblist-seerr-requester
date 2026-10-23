@@ -93,7 +93,7 @@ test("invalid configuration prevents startup and exits non-zero", async (t) => {
 
 for (const signal of ["SIGTERM", "SIGINT"]) {
 test(`valid configuration allows normal startup and clean ${signal} shutdown`, { timeout: 5000 }, async (t) => {
-  const path = await withConfig(t, stringify(example));
+  const path = await withConfig(t, stringify({ ...example, runOnStartup: false }));
   const historyPath = join(dirname(path), "history.db");
   const history = createHistory(historyPath);
   history.recordSuccessfulRequest({

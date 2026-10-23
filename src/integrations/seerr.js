@@ -9,7 +9,7 @@ function titleValid(id, type) {
   if (!idValid(id) || !["movie", "tv"].includes(type))
     fail("Invalid media identity.");
 }
-function accountName(value) {
+export function accountName(value) {
   if (
     typeof value !== "string" ||
     value.trim() === "mslr_" ||
