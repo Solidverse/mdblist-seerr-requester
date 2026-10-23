@@ -92,20 +92,30 @@ created only when absent; existing history is reused without clearing records.
 `CONFIG_PATH` defaults to `/config/config.yml`; `HISTORY_DB_PATH` defaults to
 `/config/history.db` and can override the database location when needed.
 
-The container runs as `node` (UID/GID `1000:1000`). Before starting, give that UID
-read/write/traverse access to this specific appdata directory and write access to
-its database, including permission to create SQLite journal files. Keep the YAML
-readable by that UID and restrict access by others because it contains API keys.
-A bind mount replaces the image directory's ownership. The image does not change
-host ownership. If Unraid requires another UID/GID, configure `--user UID:GID`
-with equivalent directory access; no PUID/PGID entrypoint is provided.
+Production initializes as root, then uses `gosu` to execute Node as UID/GID
+`99:100` by default (Unraid). Override with `-e PUID=1000 -e PGID=1000` on other
+Linux hosts. IDs must be positive; UID/GID 0 are rejected. No `--user` override
+or manual `chown` is needed on ordinary writable local appdata storage.
+
+Initialization corrects ownership of `/config` and its known configuration,
+SQLite database and journal files only. Contents and restrictive modes are
+preserved; unrelated files/subdirectories are untouched. Symlinks, hardlinks and
+special files at application paths are rejected. Keep the mount under trusted
+administrative control during initialization. Read-only mounts, restrictive
+modes, unusual filesystems and network shares that prohibit ownership changes
+may fail startup with a clear diagnostic; the app never falls back to root.
+
+Custom `CONFIG_PATH` / `HISTORY_DB_PATH` values must be canonical absolute paths.
+Direct application files under `/config` are managed automatically. Custom paths
+elsewhere (including nested directories) must already be readable/writable by the
+runtime UID/GID; initialization does not change their ownership or create their
+parent directories. Preserve existing history when changing paths.
 
 Example for a future deployment (do not run alongside development):
 
 ```bash
 docker run -d --name mdblist-seerr-requester \
   --restart unless-stopped \
-  --cap-drop ALL \
   --security-opt no-new-privileges:true \
   --stop-timeout 120 \
   -e TZ=Europe/Amsterdam \
@@ -149,11 +159,24 @@ backup and your configuration securely to TIGRI. Install the backup as
 `/mnt/user/appdata/mdblist-seerr-requester/history.db` only if no database already
 exists there. If a destination history exists, stop and reconcile it separately;
 never overwrite or discard it. Verify integrity and the same row count at the
-destination, and set directory/file permissions before starting the container.
+destination, before starting the container; production initialization handles ownership.
 Keep the original backup for recovery. Do not delete or recreate request history.
 
 ### Development remains unchanged
 
 `docker compose up -d` still uses the existing `/config` and source bind mounts,
-with `npm run dev` / `node --watch src/index.js`. Production uses the same source
+with `npm run dev` / `node --watch src/index.js`. Compose selects the
+`development` build target, runs as the existing `node` user and bypasses the
+production ownership entrypoint, so WSL/source bind mounts are not chowned. Production uses the same source
 with `node src/index.js`, without live reload.
+
+
+Docker permissions validation (temporary fixtures only; requires a local Docker daemon):
+
+```bash
+docker build -t mdblist-seerr-requester:local .
+docker build --target development -t mdblist-seerr-requester:dev-validation .
+node --test tests/docker-permissions.test.js
+```
+
+These container tests are explicitly invoked and are not part of offline `npm test`.

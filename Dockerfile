@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim
+FROM node:24-bookworm-slim AS base
 
 # Application directory
 WORKDIR /app
@@ -17,8 +17,16 @@ RUN npm ci --omit=dev --no-audit --no-fund
 # Copy application source
 COPY --chown=node:node src/ ./src/
 
-# Run as non-root user
+# Development bypasses production ownership initialization entirely.
+FROM base AS development
 USER node
+CMD ["node", "src/index.js"]
 
-# Start application
+FROM base AS production
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/*
+ENV PUID=99 PGID=100
+COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "src/index.js"]
