@@ -196,3 +196,65 @@ test("unsafe error metadata, cyclic causes and context secrets are never printed
   assert.doesNotMatch(formatError(error), /SECRET|private@example|Authorization|https:/);
   assert.doesNotMatch(safeContext({ list: "SECRET", account: "private@example.com", url: "https://host/?apikey=SECRET" }, ["SECRET"]), /SECRET|private@example|https:/);
 });
+
+for (const mediaType of ["movie", "tv"]) {
+  test(`IMDb filtering validates ratings and preserves order for ${mediaType}`, async (t) => {
+    const ratings = [8, 6, 5.9, undefined, null, "8", NaN, Infinity, -1, 11];
+    const s = await setup(t, { items: ratings.map((imdbRating, i) => ({ ...item(i + 1, mediaType), imdbRating })),
+      config: { lists: [list("first", { minImdbRating: 6 })] } });
+    await s.run();
+    assert.deepEqual(s.calls.filter(([k]) => k === "submit").map(([, args]) => args.tmdbId), [1, 2]);
+    assert.match(s.logs.join(), /IMDb filter rejected 8.*missing or invalid IMDb rating=7.*below minimum 6=1/);
+  });
+}
+
+test("release age accepts both boundaries and rejects older, future and invalid years", async (t) => {
+  const year = new Date().getFullYear();
+  const years = [year, year - 2, year - 3, year + 1, undefined, null, "2026", 2026.5, 0, -1, Infinity, Number.MAX_SAFE_INTEGER + 1];
+  const s = await setup(t, { items: years.map((releaseYear, i) => ({ ...item(i + 1, i % 2 ? "tv" : "movie"), releaseYear })),
+    config: { lists: [list("first", { maxReleaseAge: 2 })] } });
+  await s.run();
+  assert.deepEqual(s.calls.filter(([k]) => k === "submit").map(([, args]) => args.tmdbId), [1, 2]);
+  assert.match(s.logs.join(), /Release age filter rejected 10.*missing or invalid release year=8.*outside allowed range.*=2/);
+});
+
+test("zero thresholds are active and the current year updates between runs", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-06-01T12:00:00Z") });
+  const s = await setup(t, { config: { dryRun: true, lists: [list("first", { minImdbRating: 0, maxReleaseAge: 0 })] },
+    items: [{ ...item(1), imdbRating: 0, releaseYear: 2026 }, { ...item(2), imdbRating: 8, releaseYear: 2027 },
+      { ...item(3), releaseYear: 2026 }, { ...item(4), imdbRating: 8, releaseYear: 2025 }] });
+  assert.equal((await s.run()).dryRun, 1);
+  assert.equal(s.calls.find(([k]) => k === "submit")[1].tmdbId, 1);
+  s.calls.length = 0;
+  t.mock.timers.setTime(Date.parse("2027-06-01T12:00:00Z"));
+  assert.equal((await s.run()).dryRun, 1);
+  assert.equal(s.calls.find(([k]) => k === "submit")[1].tmdbId, 2);
+  assert.equal(s.history.hasRequest(1, "movie"), false);
+  assert.equal(s.history.hasRequest(2, "movie"), false);
+});
+
+test("rejected titles reach neither history nor Seerr and remain eligible on later runs", async (t) => {
+  const s = await setup(t, { config: { lists: [list("first", { minImdbRating: 6, maxReleaseAge: 0 })] },
+    items: [{ ...item(1), imdbRating: 5, releaseYear: new Date().getFullYear() }] });
+  const reads = []; const writes = [];
+  s.deps.history = { hasRequest: (...args) => { reads.push(args); return false; },
+    recordSuccessfulRequest: (...args) => { writes.push(args); return true; } };
+  assert.equal((await s.run()).submitted, 0);
+  assert.deepEqual(reads, []); assert.deepEqual(writes, []);
+  assert.deepEqual(s.calls, [["retrieve", "first"]]);
+  s.config.lists[0].minImdbRating = 5;
+  assert.equal((await s.run()).submitted, 1);
+  assert.equal(reads.length, 1); assert.equal(writes.length, 1);
+});
+
+for (const filter of [{ minImdbRating: 9 }, { maxReleaseAge: 0 }]) {
+  test(`higher-priority rejection permits lower-priority ownership: ${Object.keys(filter)[0]}`, async (t) => {
+    const s = await setup(t, { config: { lists: [list("first", filter), list("second", { requestUsername: "Other" })] },
+      items: [{ ...item(1), imdbRating: 7, releaseYear: new Date().getFullYear() - 1 }] });
+    const r = await s.run();
+    assert.equal(r.submitted, 1); assert.equal(r.duplicates, 0);
+    assert.equal(s.calls.find(([k]) => k === "submit")[1].requestUsername, "Other");
+    const db = new DatabaseSync(s.path); t.after(() => db.close());
+    assert.equal(db.prepare("SELECT source_list FROM requests").get().source_list, "second");
+  });
+}

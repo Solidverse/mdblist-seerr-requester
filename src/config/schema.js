@@ -24,6 +24,8 @@ const listSchema = z.strictObject({
   autoApproveMovies: z.boolean(),
   autoApproveSeries: z.boolean(),
   enabled: z.boolean(),
+  minImdbRating: z.number().min(0).max(10).optional(),
+  maxReleaseAge: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
 });
 
 export const configSchema = z.strictObject({

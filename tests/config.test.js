@@ -130,3 +130,24 @@ test(`valid configuration allows normal startup and clean ${signal} shutdown`, {
   }
 });
 }
+
+for (const [property, values] of [
+  ["minImdbRating", [-1, 10.1, null, "6", true, NaN, Infinity, -Infinity]],
+  ["maxReleaseAge", [-1, 1.5, null, "0", true, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]],
+]) {
+  for (const value of values) {
+    test(`invalid filter configuration ${property}=${String(value)}`, async (t) => {
+      const config = structuredClone(example);
+      config.lists[0][property] = value;
+      await assert.rejects(loadConfig(await withConfig(t, stringify(config))), new RegExp(`lists.0.${property}`));
+    });
+  }
+}
+
+test("optional filters accept boundaries and preserve lists without filters", async (t) => {
+  for (const filters of [{}, { minImdbRating: 0, maxReleaseAge: 0 }, { minImdbRating: 10, maxReleaseAge: Number.MAX_SAFE_INTEGER }, { minImdbRating: 6.5, maxReleaseAge: 2 }]) {
+    const config = structuredClone(example);
+    Object.assign(config.lists[0], filters);
+    assert.deepEqual(await loadConfig(await withConfig(t, stringify(config))), config);
+  }
+});

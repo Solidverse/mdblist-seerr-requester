@@ -32,7 +32,30 @@ export async function runRequestEngine(snapshot, {
         if (!ok) summary.invalidTitles++;
         return ok;
       });
-      prepared.push({ list, items: valid });
+      let filtered = valid;
+      if (list.minImdbRating !== undefined) {
+        let missing = 0;
+        let below = 0;
+        filtered = filtered.filter(({ imdbRating }) => {
+          if (!Number.isFinite(imdbRating) || imdbRating < 0 || imdbRating > 10) { missing++; return false; }
+          if (imdbRating < list.minImdbRating) { below++; return false; }
+          return true;
+        });
+        logger.log(`[ENGINE] ${context(list)} IMDb filter rejected ${missing + below}: missing or invalid IMDb rating=${missing}, IMDb rating below minimum ${list.minImdbRating}=${below}.`);
+      }
+      if (list.maxReleaseAge !== undefined) {
+        const currentYear = new Date().getFullYear();
+        const minimumYear = currentYear - list.maxReleaseAge;
+        let missing = 0;
+        let outside = 0;
+        filtered = filtered.filter(({ releaseYear }) => {
+          if (!Number.isSafeInteger(releaseYear) || releaseYear <= 0) { missing++; return false; }
+          if (releaseYear < minimumYear || releaseYear > currentYear) { outside++; return false; }
+          return true;
+        });
+        logger.log(`[ENGINE] ${context(list)} Release age filter rejected ${missing + outside}: missing or invalid release year=${missing}, release year outside allowed range ${minimumYear}–${currentYear}=${outside}.`);
+      }
+      prepared.push({ list, items: filtered });
     } catch (error) {
       summary.listsFailed++;
       logger.error(`[ENGINE] MDBList retrieval failed; skipping list. ${context(list)} ${formatError(error)}`);

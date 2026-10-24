@@ -52,6 +52,14 @@ lists:
     # Seerr username (prefix is added automatically)
     requestUsername: "Trending"
 
+    # Optional minimum IMDb rating (0–10); missing ratings are rejected
+    # minImdbRating: 6.0
+
+    # Optional age in calendar years; 0 accepts only the current year.
+    # Uses original movie release / first TV broadcast year, not latest season.
+    # Missing years and future years are rejected.
+    # maxReleaseAge: 0
+
     # Automatically approve movie requests
     autoApproveMovies: true
 
