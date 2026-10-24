@@ -32,7 +32,7 @@ export function createMDBListClient(config, { fetchImpl = globalThis.fetch, logg
 
   async function fetchPage(listId, offset) {
     const url = new URL(`https://api.mdblist.com/lists/${listId.split("/").map(encodeURIComponent).join("/")}/items`);
-    url.search = new URLSearchParams({ apikey: apiKey, limit: String(PAGE_SIZE), offset: String(offset), sort: "rank", order: "asc", unified: "true" });
+    url.search = new URLSearchParams({ apikey: apiKey, limit: String(PAGE_SIZE), offset: String(offset), sort: "rank", order: "asc", unified: "true", append_to_response: "ratings" });
     for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
       let response;
       let text;
@@ -124,9 +124,13 @@ export function createMDBListClient(config, { fetchImpl = globalThis.fetch, logg
           logger.warn("[MDBLIST] Skipping title with missing or invalid TMDB ID.");
           continue;
         }
+        const imdbRating = Array.isArray(item.ratings)
+          ? item.ratings.find((rating) => rating?.source === "imdb")?.value : undefined;
         titles.push({
           tmdbId, mediaType, title: item.title,
           rank: positiveInteger(item.rank) ? item.rank : null,
+          imdbRating: Number.isFinite(imdbRating) && imdbRating >= 0 && imdbRating <= 10 ? imdbRating : null,
+          releaseYear: positiveInteger(item.release_year) ? item.release_year : null,
         });
       }
       if (!hasMore) break;

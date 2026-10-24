@@ -32,7 +32,7 @@ async function tick(t, ms) {
 
 test("single-page retrieval uses the documented endpoint, authentication and TMDB ID", async () => {
   const { client, requests } = setup([page([movie(123)])]);
-  assert.deepEqual(await client.getListItems("1176"), [{ tmdbId: 123, mediaType: "movie", title: "Title 123", rank: 123 }]);
+  assert.deepEqual(await client.getListItems("1176"), [{ tmdbId: 123, mediaType: "movie", title: "Title 123", rank: 123, imdbRating: null, releaseYear: null }]);
   const { url, options } = requests[0];
   assert.equal(url.origin, "https://api.mdblist.com");
   assert.equal(url.pathname, "/lists/1176/items");
@@ -41,6 +41,9 @@ test("single-page retrieval uses the documented endpoint, authentication and TMD
   assert.equal(url.searchParams.get("offset"), "0");
   assert.equal(url.searchParams.get("sort"), "rank");
   assert.equal(url.searchParams.get("unified"), "true");
+  assert.equal(url.searchParams.get("order"), "asc");
+  assert.equal(url.searchParams.get("append_to_response"), "ratings");
+  assert.equal(requests.length, 1);
   assert.equal(options.redirect, "error");
   assert.ok(options.signal instanceof AbortSignal);
 });
@@ -48,14 +51,14 @@ test("single-page retrieval uses the documented endpoint, authentication and TMD
 test("movie and TV arrays merge into rank order without changing original titles", async () => {
   const { client } = setup([page([movie(2, { title: "Één film" })], [show(1)])]);
   assert.deepEqual(await client.getListItems("1"), [
-    { tmdbId: 1, mediaType: "tv", title: "Title 1", rank: 1 },
-    { tmdbId: 2, mediaType: "movie", title: "Één film", rank: 2 },
+    { tmdbId: 1, mediaType: "tv", title: "Title 1", rank: 1, imdbRating: null, releaseYear: null },
+    { tmdbId: 2, mediaType: "movie", title: "Één film", rank: 2, imdbRating: null, releaseYear: null },
   ]);
 });
 
 test("show-only lists and missing rank are supported", async () => {
   const { client } = setup([page([], [show(1, { rank: undefined })])]);
-  assert.deepEqual(await client.getListItems("1"), [{ tmdbId: 1, mediaType: "tv", title: "Title 1", rank: null }]);
+  assert.deepEqual(await client.getListItems("1"), [{ tmdbId: 1, mediaType: "tv", title: "Title 1", rank: null, imdbRating: null, releaseYear: null }]);
 });
 
 test("empty list returns an empty array", async () => {
@@ -94,6 +97,7 @@ test("has-more takes precedence over page size, including server-capped short pa
   const { client, requests } = setup([page([movie(1)], [], true), page([movie(2)])]);
   assert.equal((await client.getListItems("1")).length, 2);
   assert.deepEqual(requests.map(({ url }) => url.searchParams.get("offset")), ["0", "1"]);
+  assert.ok(requests.every(({ url }) => url.searchParams.get("append_to_response") === "ratings"));
 });
 
 test("complete mixed list with more than 1000 titles is retrieved without a request limit", async () => {
@@ -306,4 +310,40 @@ test("MDBList 429 diagnostics preserve status and safe endpoint through bounded 
   });
   await tick(t, 1000); await tick(t, 2000); await pending;
   assert.equal(requests.length, 3); assert.doesNotMatch(warnings.join(), /TOP_SECRET|private@example/);
+});
+
+
+test("movie and TV metadata uses IMDb value rather than percentage score", async () => {
+  const { client } = setup([page([
+    movie(1, { ratings: [{ source: "tmdb", value: 75 }, { source: "imdb", value: 7.8, score: 78 }], release_year: 2024 }),
+  ], [show(2, { ratings: [{ source: "imdb", value: 9.5, score: 95 }], release_year: 2008 })])]);
+  assert.deepEqual(await client.getListItems("1"), [
+    { tmdbId: 1, mediaType: "movie", title: "Title 1", rank: 1, imdbRating: 7.8, releaseYear: 2024 },
+    { tmdbId: 2, mediaType: "tv", title: "Title 2", rank: 2, imdbRating: 9.5, releaseYear: 2008 },
+  ]);
+});
+
+test("missing and malformed ratings normalize to null for movies and TV", async () => {
+  const ratings = [undefined, null, {}, [], [null], [{ source: "tmdb", value: 8 }],
+    ...[undefined, null, "8.2", "", true, {}, -1, 11, NaN, Infinity].map((value) => [{ source: "imdb", value, score: 82 }])];
+  for (const makeItem of [movie, show]) {
+    const items = ratings.map((value, index) => makeItem(index + 1, { ratings: value }));
+    const { client } = setup([Response.json(items, { headers: { "X-Has-More": "false" } })]);
+    assert.deepEqual((await client.getListItems("1")).map((item) => item.imdbRating), ratings.map(() => null));
+  }
+});
+
+test("missing and invalid release years normalize to null for movies and TV", async () => {
+  const years = [undefined, null, "2024", "", true, {}, 0, -2024, 2024.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1];
+  for (const makeItem of [movie, show]) {
+    const items = years.map((release_year, index) => makeItem(index + 1, { release_year }));
+    const { client } = setup([Response.json(items, { headers: { "X-Has-More": "false" } })]);
+    assert.deepEqual((await client.getListItems("1")).map((item) => item.releaseYear), years.map(() => null));
+  }
+});
+
+test("IMDb rating boundaries remain numeric", async () => {
+  const { client } = setup([page([movie(1, { ratings: [{ source: "imdb", value: 0 }] })],
+    [show(2, { ratings: [{ source: "imdb", value: 10 }] })])]);
+  assert.deepEqual((await client.getListItems("1")).map((item) => item.imdbRating), [0, 10]);
 });
